@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=WhatsUp
+Comment=Native WhatsApp client
+Exec=whatsup
+Icon=whatsup
+Terminal=false
+Categories=Network;InstantMessaging;Qt;
+StartupWMClass=whatsup

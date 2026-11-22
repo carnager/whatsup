@@ -1,0 +1,54 @@
+# Maintainer: Rasmus Steinke <rasi@xssn.at>
+# Builds the latest commit from GitHub: `cd packaging/arch && makepkg -si`.
+pkgname=whatsup-git
+pkgver=r0.g0000000
+pkgrel=1
+pkgdesc='A native WhatsApp desktop client (Go, Qt 6 / QtQuick), no Electron'
+arch=(x86_64 aarch64)
+url='https://github.com/carnager/whatsup'
+license=(MIT)
+depends=(qt6-base qt6-declarative qt6-multimedia sqlite glibc gcc-libs hicolor-icon-theme)
+makedepends=(go git pkgconf)
+optdepends=('xdg-desktop-portal: native file dialogs and "Open with…"'
+            'ffmpeg: video previews and thumbnails'
+            'poppler: PDF previews'
+            'noto-fonts-emoji: color emoji')
+provides=(whatsup)
+conflicts=(whatsup)
+source=("whatsup::git+https://github.com/carnager/whatsup.git")
+sha256sums=('SKIP')
+options=(!lto)
+
+pkgver() {
+  cd whatsup
+  printf 'r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd whatsup
+  export GOPATH="$srcdir/gopath"
+  go mod download
+}
+
+build() {
+  cd whatsup
+  export GOPATH="$srcdir/gopath"
+  export CGO_ENABLED=1
+  export CGO_CPPFLAGS="$CPPFLAGS" CGO_CFLAGS="$CFLAGS" CGO_CXXFLAGS="$CXXFLAGS" CGO_LDFLAGS="$LDFLAGS"
+  go build -trimpath -buildmode=pie -mod=readonly -modcacherw -ldflags="-s -w -linkmode=external" -o whatsup .
+}
+
+check() {
+  cd whatsup
+  export GOPATH="$srcdir/gopath"
+  go test ./...
+}
+
+package() {
+  cd whatsup
+  install -Dm755 whatsup "$pkgdir/usr/bin/whatsup"
+  install -Dm644 whatsup.desktop "$pkgdir/usr/share/applications/whatsup.desktop"
+  install -Dm644 assets/whatsup.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/whatsup.svg"
+  install -Dm644 README.md -t "$pkgdir/usr/share/doc/whatsup/"
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+}
