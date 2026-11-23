@@ -360,12 +360,37 @@ func (s *MsgStore) SenderName(jid string) string {
 	return n
 }
 
-// MediaMessages returns the latest photos/videos of a chat that have a local file.
-func (s *MsgStore) MediaMessages(chat string, limit int) []Msg {
+// ChatCounts summarizes the stored history of a chat.
+type ChatCounts struct {
+	Messages, Media, Files int
+	First                  int64
+}
+
+func (s *MsgStore) ChatCounts(chat string) ChatCounts {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT id, kind, media FROM messages WHERE chat = ? AND kind IN ('image','video') AND media != '' AND deleted = 0
-		ORDER BY ts DESC LIMIT ?`, chat, limit)
+	var c ChatCounts
+	s.db.QueryRow(`SELECT COUNT(*), COALESCE(MIN(ts), 0),
+		COALESCE(SUM(kind IN ('image','video')), 0), COALESCE(SUM(kind = 'document'), 0)
+		FROM messages WHERE chat = ? AND deleted = 0`, chat).Scan(&c.Messages, &c.First, &c.Media, &c.Files)
+	return c
+}
+
+// History returns the newest messages of the given kinds, newest first.
+func (s *MsgStore) History(chat string, limit int, kinds ...string) []Msg {
+	if len(kinds) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	args := []any{chat}
+	for _, k := range kinds {
+		args = append(args, k)
+	}
+	args = append(args, limit)
+	rows, err := s.db.Query(`SELECT id, kind, media, text, ts, from_me FROM messages
+		WHERE chat = ? AND deleted = 0 AND kind IN (?`+strings.Repeat(",?", len(kinds)-1)+`)
+		ORDER BY ts DESC, rowid DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil
 	}
@@ -373,7 +398,27 @@ func (s *MsgStore) MediaMessages(chat string, limit int) []Msg {
 	var out []Msg
 	for rows.Next() {
 		m := Msg{Chat: chat}
-		if rows.Scan(&m.ID, &m.Kind, &m.Media) == nil {
+		if rows.Scan(&m.ID, &m.Kind, &m.Media, &m.Text, &m.TS, &m.FromMe) == nil {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// LinkMessages returns messages that may contain a link, newest first.
+func (s *MsgStore) LinkMessages(chat string) []Msg {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.Query(`SELECT id, text, ts FROM messages
+		WHERE chat = ? AND deleted = 0 AND text LIKE '%http%' ORDER BY ts DESC, rowid DESC`, chat)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []Msg
+	for rows.Next() {
+		m := Msg{Chat: chat}
+		if rows.Scan(&m.ID, &m.Text, &m.TS) == nil {
 			out = append(out, m)
 		}
 	}

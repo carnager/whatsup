@@ -140,12 +140,12 @@ func (l *Links) Get(u string, raw []byte, fetch bool, done func()) *LinkPreview 
 // Fetch returns the preview for url, fetching it if needed (blocking).
 func (l *Links) Fetch(ctx context.Context, u string) *LinkPreview {
 	l.mu.Lock()
-	if lp, ok := l.mem[u]; ok {
+	if lp := l.mem[u]; lp != nil { // a remembered failure gets retried below
 		l.mu.Unlock()
 		return lp
 	}
 	l.mu.Unlock()
-	if lp, fetched, ok := l.store.LinkPreview(u); ok && (!lp.empty() || time.Since(time.Unix(fetched, 0)) < time.Hour) {
+	if lp, fetched, ok := l.store.LinkPreview(u); ok && (!lp.empty() || time.Since(time.Unix(fetched, 0)) < 5*time.Minute) {
 		return l.remember(u, lp)
 	}
 	lp := l.fetch(ctx, u)

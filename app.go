@@ -52,6 +52,9 @@ type App struct {
 	pickModel   *ListModel // forward target picker
 	members     *ListModel // group participants in the info panel
 	mediaModel  *ListModel // shared media in the info panel
+	fileModel   *ListModel // shared documents in the info panel
+	linkModel   *ListModel // shared links in the info panel
+	common      *ListModel // groups shared with a contact
 	bridge      *qt.QAbstractListModel
 
 	// main-thread state
@@ -64,6 +67,8 @@ type App struct {
 	unreadAtOpen int
 	contacts     []Contact
 	contactsAt   time.Time
+	infoChat     string
+	infoLimits   map[string]int
 
 	dirtyMu  sync.Mutex
 	dirty    bool
@@ -87,6 +92,9 @@ func NewApp(qapp *qt.QApplication, ms *MsgStore, av *Avatars, em *EmojiDB, cache
 	a.pickModel = NewListModel("jid", "name", "sub", "avatar", "initials", "tint")
 	a.members = NewListModel("jid", "name", "sub", "avatar", "initials", "tint", "role")
 	a.mediaModel = NewListModel("msgId", "media", "kind")
+	a.fileModel = NewListModel("msgId", "name", "info", "time")
+	a.linkModel = NewListModel("url", "title", "site", "image", "time")
+	a.common = NewListModel("jid", "name", "sub", "avatar", "initials", "tint")
 
 	// QML -> Go calls go through setData on this one-row model, since we
 	// can't declare Q_INVOKABLE methods from Go.
@@ -128,6 +136,9 @@ func NewApp(qapp *qt.QApplication, ms *MsgStore, av *Avatars, em *EmojiDB, cache
 	ctx.SetContextProperty("pickModel", a.pickModel.M.QObject)
 	ctx.SetContextProperty("memberModel", a.members.M.QObject)
 	ctx.SetContextProperty("mediaModel", a.mediaModel.M.QObject)
+	ctx.SetContextProperty("fileModel", a.fileModel.M.QObject)
+	ctx.SetContextProperty("linkModel", a.linkModel.M.QObject)
+	ctx.SetContextProperty("commonModel", a.common.M.QObject)
 	ctx.SetContextProperty("bridge", a.bridge.QObject)
 	if p := os.Getenv("WHATSUP_QML"); p != "" { // live-edit the UI during development
 		a.engine.Load(qt.QUrl_FromLocalFile(p))
@@ -165,7 +176,7 @@ func (a *App) set(name string, v any) {
 func (a *App) withMedia(chat, id string, f func(path string)) {
 	a.Status("Downloading…")
 	a.async("Download", func() error {
-		p, err := a.wa.DownloadMedia(chat, id)
+		p, err := a.mediaFile(chat, id)
 		if err != nil {
 			return err
 		}
@@ -251,7 +262,7 @@ func (a *App) command(cmd, x, y, z string) {
 	case "view": // full media for the built-in viewer -> viewerReady = "id\nurl"
 		id := x
 		a.async("Download", func() error {
-			p, err := a.wa.DownloadMedia(chat, id)
+			p, err := a.mediaFile(chat, id)
 			if err != nil {
 				mainthread.Start(func() { a.set("viewerReady", ""); a.set("viewerReady", id+"\n") })
 				return err
@@ -288,14 +299,15 @@ func (a *App) command(cmd, x, y, z string) {
 		})
 	case "save":
 		a.async("Save", func() error {
-			p, err := a.wa.DownloadMedia(chat, x)
+			p, err := a.mediaFile(chat, x)
 			if err != nil {
 				return err
 			}
+			name := a.saveName(x, p)
 			dir := qt.QStandardPaths_WritableLocation(qt.QStandardPaths__DownloadLocation)
 			var dst string
 			if a.portal != nil {
-				dst, err = a.portal.SaveFile("Save file", displayName(p), dir)
+				dst, err = a.portal.SaveFile("Save file", name, dir)
 				if err == errCancelled {
 					return nil
 				}
@@ -303,7 +315,7 @@ func (a *App) command(cmd, x, y, z string) {
 					return err
 				}
 			} else {
-				dst = uniquePath(filepath.Join(dir, displayName(p)))
+				dst = uniquePath(filepath.Join(dir, name))
 			}
 			if err := copyFile(p, dst); err != nil {
 				return err
@@ -441,6 +453,11 @@ func (a *App) command(cmd, x, y, z string) {
 		})
 	case "info":
 		a.loadInfo(chat)
+	case "infoMore": // x = media, files or links
+		if a.infoLimits != nil {
+			a.infoLimits[x] += infoPage
+			a.loadInfoMedia(chat)
+		}
 	case "exact": // ":code:" typed completely -> resolve synchronously
 		a.set("exactEmoji", a.emoji.Exact(x))
 	}
@@ -490,24 +507,6 @@ func (a *App) refreshPick(q string) {
 	a.pickModel.Reset(keys, rows)
 }
 
-// loadInfoMedia fills the shared-media grid of the info panel.
-func (a *App) loadInfoMedia(chat string) {
-	var mk []string
-	var mr [][]any
-	for _, m := range a.store.MediaMessages(chat, 24) {
-		mk = append(mk, m.ID)
-		media := "file://" + m.Media
-		if m.Kind == "video" && !strings.HasSuffix(m.Media, "_thumb.jpg") {
-			media = ""
-			if p := a.previews.Get(m.Media, "video", func() { a.markDirty("*info") }); p != "" {
-				media = "file://" + p
-			}
-		}
-		mr = append(mr, []any{m.ID, media, m.Kind})
-	}
-	a.mediaModel.Reset(mk, mr)
-}
-
 func (a *App) loadInfo(chat string) {
 	if chat == "" {
 		return
@@ -515,9 +514,16 @@ func (a *App) loadInfo(chat string) {
 	isGroup := strings.HasSuffix(chat, "@g.us")
 	name := a.wa.DisplayName(chat)
 	sub := ""
-	if u, _, ok := strings.Cut(chat, "@"); ok && !isGroup {
+	if u, ok := strings.CutSuffix(chat, "@s.whatsapp.net"); ok {
 		sub = "+" + u
 	}
+	if chat != a.infoChat || a.infoLimits == nil {
+		a.infoChat = chat
+		a.infoLimits = map[string]int{"media": infoPage, "files": infoPage, "links": infoPage}
+		a.common.Reset(nil, nil)
+	}
+	details := a.infoDetails(chat, isGroup)
+	a.setInfoDetails(details)
 	a.set("infoName", name)
 	a.set("infoSub", sub)
 	a.set("infoAbout", "")
@@ -528,6 +534,11 @@ func (a *App) loadInfo(chat string) {
 	a.members.Reset(nil, nil)
 
 	a.loadInfoMedia(chat)
+	if isGroup {
+		a.common.Reset(nil, nil)
+	} else {
+		go a.loadCommonGroups(chat)
+	}
 
 	go func() {
 		if p, err := a.avatars.Full(chat); err == nil && p != "" {
@@ -549,6 +560,9 @@ func (a *App) loadInfo(chat string) {
 				return
 			}
 			a.set("infoAbout", info.About)
+			if len(info.Business) > 0 {
+				a.setInfoDetails(append(append([]infoDetail{}, info.Business...), details...))
+			}
 			if !info.Created.IsZero() {
 				a.set("infoCreated", "Created "+info.Created.Format("2 January 2006"))
 			}
@@ -746,7 +760,7 @@ func (a *App) flusher() {
 			if d["*"] || d["*avatars"] || d[cur] {
 				a.refreshMessages()
 			}
-			if d["*info"] {
+			if d["*info"] || ((d["*"] || d[cur]) && a.infoLimits != nil && a.infoChat == cur && a.root.Property("infoOpen").ToBool()) {
 				a.loadInfoMedia(cur)
 			}
 		})

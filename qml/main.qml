@@ -50,11 +50,13 @@ ApplicationWindow {
     readonly property var cLink: composerLink !== "" ? JSON.parse(composerLink) : null
     property string linkUrl: ""                      // first URL in the composer
     property string linkDismissed: ""                // user closed the preview for this URL
-    readonly property bool showComposerLink: cLink !== null && cLink.url === linkUrl && linkUrl !== linkDismissed
-                                             && (cLink.title !== "" || cLink.image !== "") && editId === ""
+    readonly property bool showComposerLink: linkUrl !== "" && linkUrl !== linkDismissed && editId === ""
+    readonly property bool linkLoading: cLink === null || cLink.url !== linkUrl
+    readonly property bool linkHasData: !linkLoading && (cLink.title !== "" || cLink.image !== "")
+    readonly property string linkHost: linkUrl.replace(/^https?:\/\/(www\.)?/i, "").split(/[\/?#]/)[0]
     Timer {
         id: linkTimer
-        interval: 500
+        interval: 250
         onTriggered: {
             var m = composer.text.match(/https?:\/\/[^\s<>"]+[^\s<>".,;:!?)\]]/)
             var u = m ? m[0] : ""
@@ -80,6 +82,16 @@ ApplicationWindow {
     property string infoAvatar: ""
     property string infoInitials: ""
     property string infoColor: "#888"
+    property string infoDetails: "[]"
+    property int infoMediaTotal: 0
+    property int infoFilesTotal: 0
+    property int infoLinksTotal: 0
+    property string infoTab: "media"
+    // the chosen tab, or the first one that has something in it
+    readonly property string infoTabShown:
+        (infoTab === "media" && infoMediaTotal > 0) || (infoTab === "files" && infoFilesTotal > 0)
+            || (infoTab === "links" && infoLinksTotal > 0) ? infoTab
+        : infoMediaTotal > 0 ? "media" : infoFilesTotal > 0 ? "files" : "links"
 
     // ---- local UI state ----
     property string replyId: ""
@@ -1662,7 +1674,7 @@ ApplicationWindow {
                                 id: clImg
                                 x: 12; anchors.verticalCenter: parent.verticalCenter
                                 width: visible ? 48 : 0; height: 48
-                                visible: root.cLink !== null && root.cLink.image !== ""
+                                visible: root.linkHasData && root.cLink.image !== ""
                                 source: visible ? root.cLink.image : ""
                                 sourceSize.width: 96
                                 fillMode: Image.PreserveAspectCrop
@@ -1676,20 +1688,25 @@ ApplicationWindow {
                                 spacing: 2
                                 Text {
                                     width: parent.width
-                                    text: root.cLink ? root.cLink.title : ""
-                                    color: t.text; font.pixelSize: 13; font.weight: Font.DemiBold
+                                    text: root.linkLoading ? "Loading preview…"
+                                          : !root.linkHasData ? "No preview available"
+                                          : root.cLink.title !== "" ? root.cLink.title : root.linkHost
+                                    color: root.linkHasData ? t.text : t.text2
+                                    font.pixelSize: 13; font.weight: root.linkHasData ? Font.DemiBold : Font.Normal
                                     elide: Text.ElideRight; textFormat: Text.PlainText
                                 }
                                 Text {
                                     width: parent.width
                                     visible: text !== ""
-                                    text: root.cLink ? root.cLink.desc : ""
+                                    text: root.linkHasData ? root.cLink.desc : ""
                                     color: t.text2; font.pixelSize: 12
                                     elide: Text.ElideRight; maximumLineCount: 1; textFormat: Text.PlainText
                                 }
                                 Text {
-                                    text: root.cLink ? root.cLink.site : ""
+                                    width: parent.width
+                                    text: root.linkHasData && root.cLink.site !== "" ? root.cLink.site : root.linkHost
                                     color: t.text3; font.pixelSize: 11
+                                    elide: Text.ElideRight; textFormat: Text.PlainText
                                 }
                             }
                             IconButton {
@@ -2025,6 +2042,11 @@ ApplicationWindow {
                             source: root.infoAvatar
                             initials: root.infoInitials
                             tint: root.infoColor
+                            TapHandler {
+                                enabled: root.infoAvatar !== ""
+                                onTapped: viewer.show("avatar:" + root.currentJid, "image", root.infoAvatar, "Profile photo")
+                            }
+                            HoverHandler { enabled: root.infoAvatar !== ""; cursorShape: Qt.PointingHandCursor }
                         }
                         Item { width: 1; height: 10 }
                         Text {
@@ -2110,18 +2132,81 @@ ApplicationWindow {
                         Text { text: root.infoCreated; color: t.text3; font.pixelSize: 12; visible: text !== ""; topPadding: 4 }
                     }
 
-                    // shared media
-                    Section { visible: mediaGrid.count > 0 }
+                    // details
+                    Section { visible: detailCol.visible }
                     Column {
-                        visible: mediaGrid.count > 0
+                        id: detailCol
+                        readonly property var rows: JSON.parse(root.infoDetails)
+                        visible: rows.length > 0
                         width: parent.width
                         padding: 20
+                        spacing: 12
+                        Repeater {
+                            model: detailCol.rows
+                            delegate: Column {
+                                required property var modelData
+                                width: detailCol.width - 40
+                                spacing: 2
+                                Text { text: modelData.label; color: t.text3; font.pixelSize: 12; font.weight: Font.DemiBold }
+                                TextEdit {
+                                    width: parent.width
+                                    text: modelData.value
+                                    color: t.text; font.pixelSize: 14
+                                    wrapMode: TextEdit.Wrap
+                                    readOnly: true
+                                    selectByMouse: true
+                                    selectionColor: t.accent
+                                }
+                            }
+                        }
+                    }
+
+                    // shared media, files and links
+                    Section { visible: historyCol.visible }
+                    Column {
+                        id: historyCol
+                        visible: root.infoMediaTotal + root.infoFilesTotal + root.infoLinksTotal > 0
+                        width: parent.width
+                        padding: 20
+                        topPadding: 10
                         spacing: 10
-                        Text { text: "Media"; color: t.text3; font.pixelSize: 12; font.weight: Font.DemiBold }
+
+                        Row {
+                            id: historyTabs
+                            width: historyCol.width - 40
+                            Repeater {
+                                model: [
+                                    { key: "media", label: "Media", n: root.infoMediaTotal },
+                                    { key: "files", label: "Files", n: root.infoFilesTotal },
+                                    { key: "links", label: "Links", n: root.infoLinksTotal }
+                                ]
+                                delegate: AbstractButton {
+                                    id: tabBtn
+                                    required property var modelData
+                                    readonly property bool current: root.infoTabShown === modelData.key
+                                    width: historyTabs.width / 3; height: 40
+                                    enabled: modelData.n > 0
+                                    hoverEnabled: true
+                                    onClicked: root.infoTab = modelData.key
+                                    background: Item {
+                                        Rectangle { anchors.fill: parent; anchors.bottomMargin: 2; radius: 8; color: tabBtn.hovered && !tabBtn.current ? t.hover : "transparent" }
+                                        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 2; radius: 1; color: tabBtn.current ? t.accent : t.line }
+                                    }
+                                    contentItem: Text {
+                                        text: tabBtn.modelData.label + (tabBtn.modelData.n > 0 ? "  " + tabBtn.modelData.n : "")
+                                        color: tabBtn.current ? t.accent : (tabBtn.enabled ? t.text2 : t.text3)
+                                        font.pixelSize: 13; font.weight: tabBtn.current ? Font.DemiBold : Font.Normal
+                                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                                    }
+                                }
+                            }
+                        }
+
                         GridView {
                             id: mediaGrid
-                            width: parent.width - 40
-                            height: Math.ceil(count / 3) * cellHeight
+                            visible: root.infoTabShown === "media"
+                            width: historyCol.width - 40
+                            height: visible ? Math.ceil(count / 3) * cellHeight : 0
                             interactive: false
                             model: mediaModel
                             cellWidth: Math.floor(width / 3)
@@ -2132,7 +2217,16 @@ ApplicationWindow {
                                 required property string kind
                                 width: mediaGrid.cellWidth
                                 height: mediaGrid.cellHeight
+                                Rectangle {
+                                    anchors.fill: parent
+                                    anchors.margins: 2
+                                    radius: 4
+                                    color: t.field
+                                    visible: tileImg.status !== Image.Ready
+                                    Icon { anchors.centerIn: parent; visible: kind !== "video"; name: "image"; size: 20; tint: t.text3 }
+                                }
                                 Image {
+                                    id: tileImg
                                     anchors.fill: parent
                                     anchors.margins: 2
                                     source: media
@@ -2141,9 +2235,190 @@ ApplicationWindow {
                                     sourceSize.width: 200
                                     smooth: true
                                 }
-                                Icon { visible: kind === "video"; anchors.centerIn: parent; name: "play"; size: 22; tint: "white" }
-                                TapHandler { onTapped: viewer.show(msgId, kind === "video" ? "video" : "image", media, "") }
+                                Icon { visible: kind === "video"; anchors.centerIn: parent; name: "play"; size: 22; tint: tileImg.status === Image.Ready ? "white" : t.text3 }
+                                TapHandler { onTapped: viewer.showGallery(msgId, kind === "video" ? "video" : "image", media) }
                                 HoverHandler { cursorShape: Qt.PointingHandCursor }
+                            }
+                        }
+
+                        ListView {
+                            id: fileList
+                            visible: root.infoTabShown === "files"
+                            width: historyCol.width - 40
+                            height: visible ? contentHeight : 0
+                            interactive: false
+                            model: fileModel
+                            delegate: Item {
+                                id: fileRow
+                                required property string msgId
+                                required property string name
+                                required property string info
+                                required property string time
+                                width: ListView.view.width
+                                height: 56
+                                Rectangle { anchors.fill: parent; anchors.leftMargin: -8; anchors.rightMargin: -8; radius: 10; color: fileMa.containsMouse ? t.hover : "transparent" }
+                                MouseArea {
+                                    id: fileMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.call("openMedia", fileRow.msgId)
+                                }
+                                Rectangle {
+                                    id: fileIconBox
+                                    width: 38; height: 38; radius: 9
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: t.accentSoft
+                                    Icon { anchors.centerIn: parent; name: root.fileIcon(fileRow.name); size: 18; tint: t.accent }
+                                }
+                                Column {
+                                    anchors.left: fileIconBox.right; anchors.leftMargin: 10
+                                    anchors.right: fileSave.left; anchors.rightMargin: 4
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 1
+                                    Text { width: parent.width; text: fileRow.name; color: t.text; font.pixelSize: 13; elide: Text.ElideMiddle; textFormat: Text.PlainText }
+                                    Text { width: parent.width; text: [fileRow.info, fileRow.time].filter(function(x) { return x !== "" }).join(" · "); color: t.text3; font.pixelSize: 11; elide: Text.ElideRight }
+                                }
+                                IconButton {
+                                    id: fileSave
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    iconName: "download"; size: 32; iconSize: 16
+                                    tip: root.portalOK ? "Save as…" : "Save to Downloads"
+                                    onClicked: root.call("save", fileRow.msgId)
+                                }
+                            }
+                        }
+
+                        ListView {
+                            id: linkList
+                            visible: root.infoTabShown === "links"
+                            width: historyCol.width - 40
+                            height: visible ? contentHeight : 0
+                            interactive: false
+                            model: linkModel
+                            delegate: Item {
+                                id: linkRow
+                                required property string url
+                                required property string title
+                                required property string site
+                                required property string image
+                                required property string time
+                                width: ListView.view.width
+                                height: 62
+                                Rectangle { anchors.fill: parent; anchors.leftMargin: -8; anchors.rightMargin: -8; radius: 10; color: linkMa.containsMouse ? t.hover : "transparent" }
+                                MouseArea {
+                                    id: linkMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.call("link", linkRow.url)
+                                    ToolTip.visible: containsMouse
+                                    ToolTip.delay: 600
+                                    ToolTip.text: linkRow.url
+                                }
+                                Rectangle {
+                                    id: linkThumb
+                                    width: 46; height: 46; radius: 8
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    color: t.accentSoft
+                                    clip: true
+                                    Icon { anchors.centerIn: parent; visible: linkImg.status !== Image.Ready; name: "open"; size: 18; tint: t.accent }
+                                    Image {
+                                        id: linkImg
+                                        anchors.fill: parent
+                                        source: linkRow.image
+                                        sourceSize.width: 92
+                                        fillMode: Image.PreserveAspectCrop
+                                        asynchronous: true
+                                    }
+                                }
+                                Column {
+                                    anchors.left: linkThumb.right; anchors.leftMargin: 10
+                                    anchors.right: linkCopy.left; anchors.rightMargin: 4
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: 1
+                                    Text { width: parent.width; text: linkRow.title; color: t.text; font.pixelSize: 13; elide: Text.ElideRight; textFormat: Text.PlainText }
+                                    Text { width: parent.width; text: [linkRow.site, linkRow.time].filter(function(x) { return x !== "" }).join(" · "); color: t.text3; font.pixelSize: 11; elide: Text.ElideRight; textFormat: Text.PlainText }
+                                }
+                                IconButton {
+                                    id: linkCopy
+                                    anchors.right: parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    iconName: "copy"; size: 32; iconSize: 16; tip: "Copy link"
+                                    onClicked: { root.call("copy", linkRow.url); root.statusText = "Link copied" }
+                                }
+                            }
+                        }
+
+                        AbstractButton {
+                            id: moreBtn
+                            readonly property int loaded: root.infoTabShown === "media" ? mediaGrid.count : root.infoTabShown === "files" ? fileList.count : linkList.count
+                            readonly property int total: root.infoTabShown === "media" ? root.infoMediaTotal : root.infoTabShown === "files" ? root.infoFilesTotal : root.infoLinksTotal
+                            visible: loaded < total
+                            width: historyCol.width - 40; height: 36
+                            hoverEnabled: true
+                            onClicked: root.call("infoMore", root.infoTabShown)
+                            background: Rectangle { radius: 18; color: moreBtn.hovered ? t.selected : t.field }
+                            contentItem: Text {
+                                text: "Show more (" + (moreBtn.total - moreBtn.loaded) + ")"
+                                color: t.text; font.pixelSize: 13
+                                horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+                    }
+
+                    // groups shared with this contact
+                    Section { visible: commonList.count > 0 }
+                    Column {
+                        visible: commonList.count > 0
+                        width: parent.width
+                        topPadding: 16
+                        bottomPadding: 8
+                        Row {
+                            leftPadding: 20
+                            spacing: 8
+                            bottomPadding: 6
+                            Icon { name: "users"; size: 15; tint: t.text3; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: commonList.count === 1 ? "1 group in common" : commonList.count + " groups in common"; color: t.text3; font.pixelSize: 12; font.weight: Font.DemiBold }
+                        }
+                        ListView {
+                            id: commonList
+                            width: parent.width
+                            height: contentHeight
+                            interactive: false
+                            model: commonModel
+                            delegate: Item {
+                                id: cg
+                                required property string jid
+                                required property string name
+                                required property string sub
+                                required property string avatar
+                                required property string initials
+                                required property string tint
+                                width: ListView.view.width
+                                height: 58
+                                Rectangle { anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; radius: 10; color: cgMa.containsMouse ? t.hover : "transparent" }
+                                Avatar {
+                                    id: cgAv
+                                    x: 20; anchors.verticalCenter: parent.verticalCenter
+                                    width: 40; height: 40
+                                    source: cg.avatar; initials: cg.initials; tint: cg.tint
+                                }
+                                Column {
+                                    anchors.left: cgAv.right; anchors.leftMargin: 12
+                                    anchors.right: parent.right; anchors.rightMargin: 20
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    Text { width: parent.width; text: cg.name; color: t.text; font.pixelSize: 14; elide: Text.ElideRight }
+                                    Text { width: parent.width; text: cg.sub; color: t.text3; font.pixelSize: 12; elide: Text.ElideRight }
+                                }
+                                MouseArea {
+                                    id: cgMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.call("open", cg.jid)
+                                }
                             }
                         }
                     }
@@ -2243,6 +2518,15 @@ ApplicationWindow {
             if (!opened) open()
             root.call("view", id)
         }
+        // opened from the info panel: arrows walk the media history
+        property bool gallery: false
+        function galleryData(i, role) { return mediaModel.data(mediaModel.index(i, 0), role) } // 257 id, 258 media, 259 kind
+        function galleryIndex() {
+            for (var i = 0; i < mediaModel.rowCount(); i++)
+                if (galleryData(i, 257) === msgId) return i
+            return -1
+        }
+        function showGallery(id, k, th) { gallery = true; show(id, k, th, "") }
         function ready(s) {
             var i = s.indexOf("\n")
             if (s.substring(0, i) !== msgId) return
@@ -2261,6 +2545,15 @@ ApplicationWindow {
             return -1
         }
         function step(dir) { // +1 = older, -1 = newer
+            if (gallery) {
+                var g = galleryIndex() + dir
+                if (g < 0 || g >= mediaModel.rowCount() || galleryIndex() < 0) return
+                var gid = galleryData(g, 257), gk = galleryData(g, 259), gm = galleryData(g, 258)
+                if (dir > 0 && g >= mediaModel.rowCount() - 4 && mediaModel.rowCount() < root.infoMediaTotal)
+                    root.call("infoMore", "media")
+                show(gid, gk === "video" ? "video" : "image", gm, "")
+                return
+            }
             if (pos < 0) return
             for (var i = pos + dir; i >= 0 && i < messageModel.rowCount(); i += dir) {
                 var vk = root.msgData(i, "viewKind")
@@ -2273,12 +2566,16 @@ ApplicationWindow {
             }
         }
         function hasStep(dir) {
+            if (gallery) {
+                var c = galleryIndex()
+                return c >= 0 && c + dir >= 0 && c + dir < mediaModel.rowCount()
+            }
             if (pos < 0) return false
             for (var i = pos + dir; i >= 0 && i < messageModel.rowCount(); i += dir)
                 if (root.msgData(i, "viewKind") !== "" && !root.msgData(i, "deleted")) return true
             return false
         }
-        onClosed: { vplayer.stop(); src = ""; msgId = ""; composer.forceActiveFocus() }
+        onClosed: { vplayer.stop(); src = ""; msgId = ""; gallery = false; composer.forceActiveFocus() }
 
         background: Rectangle { color: Qt.rgba(0.03, 0.04, 0.05, 0.96) }
 

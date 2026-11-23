@@ -93,6 +93,8 @@ func (a *Avatars) enqueueLocked(jid string) {
 // Invalidate forces a refetch (profile picture changed).
 func (a *Avatars) Invalidate(jid string) {
 	os.Remove(a.path(jid))
+	os.Remove(a.fullPath(jid))
+	os.Remove(a.originalPath(jid))
 	a.mu.Lock()
 	delete(a.known, jid)
 	delete(a.failed, jid)
@@ -164,14 +166,42 @@ func (a *Avatars) fetch(jid string) (string, bool) {
 	return "file://" + p + "?" + time.Now().Format("150405"), true
 }
 
-// Full returns a large, circle-cropped profile picture (cached for a day).
+func (a *Avatars) fullPath(jid string) string {
+	return filepath.Join(a.dir, safeName(jid)+"_full.png")
+}
+
+func (a *Avatars) originalPath(jid string) string {
+	return filepath.Join(a.dir, safeName(jid)+"_orig.jpg")
+}
+
+// Original returns the uncropped profile picture, "" if there is none.
+// Without a connection the last downloaded copy is used.
+func (a *Avatars) Original(jid string) (string, error) {
+	p := a.originalPath(jid)
+	if _, err := a.Full(jid); err != nil {
+		if _, serr := os.Stat(p); serr == nil {
+			return p, nil
+		}
+		return "", err
+	}
+	if st, err := os.Stat(p); err != nil || st.Size() == 0 {
+		return "", nil
+	}
+	return p, nil
+}
+
+// Full returns a large, circle-cropped profile picture (cached for a day)
+// and keeps the uncropped original next to it.
 func (a *Avatars) Full(jid string) (string, error) {
-	p := filepath.Join(a.dir, safeName(jid)+"_full.png")
+	p := a.fullPath(jid)
+	orig := a.originalPath(jid)
 	if st, err := os.Stat(p); err == nil && time.Since(st.ModTime()) < 24*time.Hour {
 		if st.Size() == 0 {
 			return "", nil
 		}
-		return p, nil
+		if _, err := os.Stat(orig); err == nil { // older versions kept no original
+			return p, nil
+		}
 	}
 	if a.wa == nil || !a.wa.cli.IsConnected() {
 		return "", errors.New("not connected")
@@ -185,6 +215,7 @@ func (a *Avatars) Full(jid string) (string, error) {
 	info, err := a.wa.cli.GetProfilePictureInfo(ctx, j, &whatsmeow.GetProfilePictureParams{})
 	if errors.Is(err, whatsmeow.ErrProfilePictureNotSet) || errors.Is(err, whatsmeow.ErrProfilePictureUnauthorized) || (err == nil && info == nil) {
 		os.WriteFile(p, nil, 0o600)
+		os.Remove(orig) // the photo was removed or hidden
 		return "", nil
 	}
 	if err != nil {
@@ -196,6 +227,9 @@ func (a *Avatars) Full(jid string) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", errors.New(resp.Status)
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 	if err != nil {
 		return "", err
@@ -206,6 +240,9 @@ func (a *Avatars) Full(jid string) (string, error) {
 	}
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, circleCrop(img)); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(orig, data, 0o600); err != nil {
 		return "", err
 	}
 	return p, os.WriteFile(p, buf.Bytes(), 0o600)

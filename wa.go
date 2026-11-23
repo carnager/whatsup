@@ -76,6 +76,10 @@ type WA struct {
 	dlMu    sync.Mutex
 	dlTried map[string]bool
 	dlSem   chan struct{}
+
+	groupsMu sync.Mutex
+	groups   []*types.GroupInfo
+	groupsAt time.Time
 }
 
 func NewWA(dataDir, cacheDir string, ms *MsgStore, ui UI) (*WA, error) {
@@ -292,7 +296,10 @@ func (w *WA) handle(evt any) {
 		if w.avatars != nil {
 			w.avatars.Invalidate(w.canon(e.JID).String())
 		}
+	case *events.JoinedGroup:
+		w.forgetGroups()
 	case *events.GroupInfo:
+		w.forgetGroups()
 		if e.Name != nil {
 			w.store.SetChatName(e.JID.String(), e.Name.Name)
 			w.ui.Changed(e.JID.String())
@@ -1098,6 +1105,7 @@ type ChatInfo struct {
 	About        string
 	Created      time.Time
 	Participants []Participant
+	Business     []infoDetail
 }
 
 // Info fetches the "about" text of a contact, or description and members of a group.
@@ -1136,6 +1144,105 @@ func (w *WA) Info(chat string) (ChatInfo, error) {
 	}
 	for _, ui := range infos {
 		out.About = ui.Status
+		if ui.VerifiedName != nil {
+			out.Business = w.businessDetails(ctx, j, ui.VerifiedName)
+		}
+	}
+	return out, nil
+}
+
+// businessDetails collects the public profile of a business account.
+func (w *WA) businessDetails(ctx context.Context, j types.JID, vn *types.VerifiedName) []infoDetail {
+	name := ""
+	if vn.Details != nil {
+		name = vn.Details.GetVerifiedName()
+	}
+	out := []infoDetail{{"Account", "Business"}}
+	if name != "" {
+		out = append(out, infoDetail{"Business name", name})
+	}
+	bp, err := w.cli.GetBusinessProfile(ctx, j)
+	if err != nil || bp == nil {
+		return out
+	}
+	var cats []string
+	for _, c := range bp.Categories {
+		if c.Name != "" {
+			cats = append(cats, c.Name)
+		}
+	}
+	if len(cats) > 0 {
+		out = append(out, infoDetail{"Category", strings.Join(cats, ", ")})
+	}
+	if bp.Address != "" {
+		out = append(out, infoDetail{"Address", bp.Address})
+	}
+	if bp.Email != "" {
+		out = append(out, infoDetail{"Email", bp.Email})
+	}
+	return out
+}
+
+// ContactDetails says whether a person is in the address book and what
+// profile name they use.
+func (w *WA) ContactDetails(chat string) (saved bool, pushName string) {
+	if j, err := types.ParseJID(chat); err == nil && w.cli.Store.Contacts != nil {
+		if c, err := w.cli.Store.Contacts.GetContact(context.Background(), j); err == nil && c.Found {
+			saved = c.FullName != "" || c.FirstName != ""
+			pushName = c.PushName
+		}
+	}
+	if pushName == "" {
+		pushName = w.store.SenderName(chat)
+	}
+	return saved, pushName
+}
+
+// GroupRef is a group shared with a contact.
+type GroupRef struct {
+	JID     string
+	Members int
+}
+
+func (w *WA) forgetGroups() {
+	w.groupsMu.Lock()
+	w.groupsAt = time.Time{}
+	w.groupsMu.Unlock()
+}
+
+// GroupsInCommon lists the groups the user shares with a contact. The group
+// list is cached briefly, since opening contacts shouldn't hammer the server.
+func (w *WA) GroupsInCommon(chat string) ([]GroupRef, error) {
+	j, err := types.ParseJID(chat)
+	if err != nil {
+		return nil, err
+	}
+	w.groupsMu.Lock()
+	defer w.groupsMu.Unlock()
+	if time.Since(w.groupsAt) > 2*time.Minute {
+		if !w.cli.IsConnected() {
+			return nil, fmt.Errorf("not connected")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		groups, err := w.cli.GetJoinedGroups(ctx)
+		if err != nil {
+			return nil, err
+		}
+		w.groups, w.groupsAt = groups, time.Now()
+	}
+	ids := map[string]bool{}
+	for _, a := range w.aliases(j) {
+		ids[a] = true
+	}
+	var out []GroupRef
+	for _, g := range w.groups {
+		for _, p := range g.Participants {
+			if ids[p.JID.ToNonAD().String()] || ids[p.PhoneNumber.ToNonAD().String()] || ids[p.LID.ToNonAD().String()] {
+				out = append(out, GroupRef{JID: g.JID.String(), Members: len(g.Participants)})
+				break
+			}
+		}
 	}
 	return out, nil
 }
