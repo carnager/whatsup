@@ -371,6 +371,8 @@ func (a *App) command(cmd, x, y, z string) {
 			a.closeChat()
 		}
 		a.async("Archive", func() error { return a.wa.SetArchived(x, y == "1") })
+	case "deleteChat":
+		a.async("Delete chat", func() error { return a.wa.DeleteChat(x) })
 	case "mute": // y = hours, "-1" forever, "0" unmute
 		var d time.Duration
 		switch y {
@@ -395,7 +397,11 @@ func (a *App) command(cmd, x, y, z string) {
 				return
 			}
 			a.Status("")
-			mainthread.Start(func() { a.openChat(jid) })
+			mainthread.Start(func() {
+				a.openChat(jid)
+				a.set("numberResolved", "")
+				a.set("numberResolved", jid)
+			})
 		}()
 	case "emojiGroup":
 		if x == "Recent" {
@@ -653,6 +659,20 @@ func (a *App) Status(text string) {
 func (a *App) Changed(chat string)         { a.markDirty(chat) }
 func (a *App) PresenceChanged(chat string) { a.markDirty("~" + chat) }
 
+// ChatRemoved closes a chat that was deleted here or on another device.
+// A chat with messages newer than the deletion stays open.
+func (a *App) ChatRemoved(chat string) {
+	mainthread.Start(func() {
+		if _, ok := a.store.Chat(chat); !ok {
+			if a.current == chat {
+				a.closeChat()
+			}
+			a.notify.Clear(chat)
+		}
+		a.markDirty(chat)
+	})
+}
+
 func (a *App) Incoming(m Msg) {
 	mainthread.Start(func() {
 		if a.active && a.current == m.Chat {
@@ -708,6 +728,9 @@ func (a *App) flusher() {
 		a.dirtyCur = map[string]bool{}
 		a.dirtyMu.Unlock()
 		mainthread.Wait(func() {
+			if d["*contacts"] {
+				a.contactsAt = time.Time{} // reload the address book
+			}
 			cur := a.current
 			if cur != "" && (d["*"] || d[cur]) && a.active {
 				a.wa.MarkRead(cur)
@@ -829,12 +852,7 @@ func (a *App) refreshChats() {
 			}
 		}
 		if digitsRe.MatchString(q) {
-			num := strings.Map(func(r rune) rune {
-				if r >= '0' && r <= '9' {
-					return r
-				}
-				return -1
-			}, q)
+			num := normalizeNumber(q, a.wa.ownJID().User)
 			keys = append(keys, "number:"+num)
 			rows = append(rows, []any{num, "Message +" + num, "Start a new chat with this number", "", 0,
 				"", "+", "#7bc862", false, false, false, "number", false})
@@ -903,12 +921,8 @@ func (a *App) openChat(jid string) {
 	}
 	a.current = jid
 	a.limit = pageSize
-	c, ok := a.store.Chat(jid)
-	if !ok || c.LastTS == 0 {
-		// new conversation (from contacts/number search)
-		a.store.UpsertChat(jid, a.wa.DisplayName(jid), time.Now().Unix(), -1)
-		c, _ = a.store.Chat(jid)
-	}
+	// a new conversation joins the chat list with its first message
+	c, _ := a.store.Chat(jid)
 	a.unreadAtOpen = c.Unread
 	a.set("currentJid", jid)
 	a.refreshHeader()

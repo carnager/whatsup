@@ -38,6 +38,7 @@ type UI interface {
 	Changed(chat string)
 	PresenceChanged(chat string)
 	Incoming(m Msg)
+	ChatRemoved(chat string)
 }
 
 type Presence struct {
@@ -274,6 +275,7 @@ func (w *WA) handle(evt any) {
 		w.presMu.Unlock()
 		go w.sendOwnPresence()
 		go w.syncGroupNames()
+		go w.catchUpAppState()
 	case *events.Disconnected:
 		w.ui.Status("Disconnected, reconnecting…")
 	case *events.LoggedOut:
@@ -348,9 +350,112 @@ func (w *WA) handle(evt any) {
 		}
 		w.ui.Changed(j)
 	case *events.DeleteChat:
+		w.removeChat(e.JID, rangeEnd(e.Action.GetMessageRange().GetLastMessageTimestamp(), e.Timestamp), false)
+	case *events.ClearChat:
+		w.removeChat(e.JID, rangeEnd(e.Action.GetMessageRange().GetLastMessageTimestamp(), e.Timestamp), true)
+	case *events.DeleteForMe:
+		for _, j := range w.aliases(e.ChatJID) {
+			w.store.RemoveMessage(j, e.MessageID)
+			w.purgeMedia([]string{e.MessageID})
+			w.ui.Changed(j)
+		}
+	case *events.Contact:
 		j := w.canon(e.JID).String()
-		w.store.DeleteChat(j)
+		name := e.Action.GetFullName()
+		if name == "" {
+			name = e.Action.GetFirstName()
+		}
+		if name != "" {
+			w.store.SetChatName(j, name)
+		} else if e.Action == nil && !strings.HasSuffix(j, "@g.us") {
+			w.store.ClearChatName(j)
+		}
+		w.ui.Changed("*contacts")
 		w.ui.Changed(j)
+	}
+}
+
+// rangeEnd picks the timestamp a delete/clear action applies up to, in seconds.
+func rangeEnd(last int64, fallback time.Time) int64 {
+	if last > 1e12 { // milliseconds
+		last /= 1000
+	}
+	if last > 0 {
+		return last
+	}
+	return fallback.Unix()
+}
+
+// aliases lists every key a conversation may be stored under: the same person
+// can be addressed by phone number or by LID.
+func (w *WA) aliases(j types.JID) []string {
+	j = j.ToNonAD()
+	out := []string{j.String()}
+	add := func(o types.JID) {
+		if o.IsEmpty() {
+			return
+		}
+		s := o.ToNonAD().String()
+		for _, have := range out {
+			if have == s {
+				return
+			}
+		}
+		out = append(out, s)
+	}
+	add(w.canon(j))
+	if j.Server == types.DefaultUserServer && w.cli.Store.LIDs != nil {
+		if lid, err := w.cli.Store.LIDs.GetLIDForPN(context.Background(), j); err == nil {
+			add(lid)
+		}
+	}
+	return out
+}
+
+func (w *WA) removeChat(j types.JID, upto int64, keepRow bool) {
+	for _, key := range w.aliases(j) {
+		w.purgeMedia(w.store.RemoveChat(key, upto, keepRow))
+		w.ui.ChatRemoved(key)
+	}
+}
+
+// purgeMedia deletes cached files of removed messages, keeping any that a
+// forwarded copy elsewhere still points to.
+func (w *WA) purgeMedia(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	go func() {
+		for _, id := range ids {
+			name := safeName(id)
+			files, _ := filepath.Glob(filepath.Join(w.mediaDir, globEscape(name)+"[._]*"))
+			for _, f := range files {
+				if !w.store.MediaInUse(f) {
+					os.Remove(f)
+				}
+			}
+		}
+	}()
+}
+
+func globEscape(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`).Replace(s)
+}
+
+// catchUpAppState fetches what other devices changed while we were away.
+// Collections never synced are left to whatsmeow's initial sync, which needs
+// keys from the phone first.
+func (w *WA) catchUpAppState() {
+	for _, name := range appstate.AllPatchNames {
+		version, _, err := w.cli.Store.AppState.GetAppStateVersion(context.Background(), string(name))
+		if err != nil || version == 0 {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		if err := w.cli.FetchAppState(ctx, name, false, false); err != nil {
+			w.cli.Log.Warnf("App state catch-up of %s failed: %v", name, err)
+		}
+		cancel()
 	}
 }
 
@@ -806,6 +911,7 @@ func (w *WA) send(chat string, msg *waE2E.Message, local Msg) error {
 	}
 	w.store.AddMessage(local, false)
 	w.store.SetArchived(chat, false)
+	w.ensureChatName(to)
 	w.ui.Changed(chat)
 	return nil
 }
@@ -1266,6 +1372,32 @@ func (w *WA) SetArchived(chat string, archive bool) error {
 	return nil
 }
 
+// DeleteChat deletes a chat here and on the user's other devices. Other
+// participants keep their copy.
+func (w *WA) DeleteChat(chat string) error {
+	j, err := types.ParseJID(chat)
+	if err != nil {
+		return err
+	}
+	last, ok := w.store.LastMessage(chat)
+	if !ok { // nothing was ever exchanged, so only this device knows the chat
+		w.removeChat(j, time.Now().Unix(), false)
+		return nil
+	}
+	sender := types.EmptyJID
+	if !last.FromMe {
+		sender, _ = types.ParseJID(last.Sender)
+	}
+	key := w.cli.BuildMessageKey(j, sender, last.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := w.cli.SendAppState(ctx, appstate.BuildDeleteChat(j, time.Unix(last.TS, 0), key, false)); err != nil {
+		return err
+	}
+	w.removeChat(j, last.TS, false)
+	return nil
+}
+
 // SetMuted mutes for d (0 = unmute, <0 = forever).
 func (w *WA) SetMuted(chat string, d time.Duration) error {
 	j, _ := types.ParseJID(chat)
@@ -1349,7 +1481,7 @@ func (w *WA) CheckNumber(phone string) (string, error) {
 	}
 	for _, r := range res {
 		if r.IsIn {
-			return r.JID.ToNonAD().String(), nil
+			return w.canon(r.JID).String(), nil
 		}
 	}
 	return "", fmt.Errorf("+%s is not on WhatsApp", strings.TrimLeft(phone, "+"))

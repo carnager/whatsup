@@ -95,6 +95,10 @@ CREATE TABLE IF NOT EXISTS link_previews (
 	video   INTEGER NOT NULL DEFAULT 0,
 	fetched INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS chat_tombstones (
+	jid  TEXT PRIMARY KEY,
+	upto INTEGER NOT NULL
+);
 `)
 	if err != nil {
 		return nil, err
@@ -127,8 +131,14 @@ func (s *MsgStore) exec(q string, args ...any) {
 }
 
 // UpsertChat creates/updates a chat. unread < 0 keeps the current count.
+// State older than a deletion of the chat is ignored.
 func (s *MsgStore) UpsertChat(jid, name string, ts int64, unread int) {
-	s.exec(`INSERT INTO chats(jid, name, last_ts, unread) VALUES(?,?,?,MAX(?,0))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ts <= s.deletedUpto(jid) {
+		return
+	}
+	s.db.Exec(`INSERT INTO chats(jid, name, last_ts, unread) VALUES(?,?,?,MAX(?,0))
 		ON CONFLICT(jid) DO UPDATE SET
 			name = CASE WHEN excluded.name != '' THEN excluded.name ELSE chats.name END,
 			last_ts = MAX(chats.last_ts, excluded.last_ts),
@@ -155,15 +165,82 @@ func (s *MsgStore) SetUnread(jid string, n int) {
 	s.exec(`UPDATE chats SET unread = ? WHERE jid = ?`, n, jid)
 }
 
-func (s *MsgStore) DeleteChat(jid string) {
-	s.exec(`DELETE FROM messages WHERE chat = ?`, jid)
-	s.exec(`DELETE FROM chats WHERE jid = ?`, jid)
+// ClearChatName forgets a stored name, e.g. when a contact was removed.
+func (s *MsgStore) ClearChatName(jid string) {
+	s.exec(`UPDATE chats SET name = '' WHERE jid = ?`, jid)
+}
+
+// deletedUpto returns the timestamp up to which a chat was deleted or
+// cleared. The caller holds s.mu.
+func (s *MsgStore) deletedUpto(jid string) int64 {
+	var upto int64
+	s.db.QueryRow(`SELECT upto FROM chat_tombstones WHERE jid = ?`, jid).Scan(&upto)
+	return upto
+}
+
+// RemoveChat deletes all messages up to and including upto and returns their
+// IDs. Newer messages survive, since they arrived after the deletion. The
+// chat row goes too when nothing is left, unless keepRow is set (clear chat).
+// The tombstone stops history sync from restoring what was removed.
+func (s *MsgStore) RemoveChat(jid string, upto int64, keepRow bool) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.db.Exec(`INSERT INTO chat_tombstones(jid, upto) VALUES(?,?)
+		ON CONFLICT(jid) DO UPDATE SET upto = MAX(upto, excluded.upto)`, jid, upto)
+	var ids []string
+	if rows, err := s.db.Query(`SELECT id FROM messages WHERE chat = ? AND ts <= ?`, jid, upto); err == nil {
+		for rows.Next() {
+			var id string
+			if rows.Scan(&id) == nil {
+				ids = append(ids, id)
+			}
+		}
+		rows.Close()
+	}
+	s.db.Exec(`DELETE FROM messages WHERE chat = ? AND ts <= ?`, jid, upto)
+	var left int
+	s.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE chat = ?`, jid).Scan(&left)
+	switch {
+	case left > 0:
+		s.db.Exec(`UPDATE chats SET
+			last_ts = (SELECT MAX(ts) FROM messages WHERE chat = ?1),
+			unread = (SELECT COUNT(*) FROM messages WHERE chat = ?1 AND read = 0 AND from_me = 0)
+			WHERE jid = ?1`, jid)
+	case keepRow:
+		s.db.Exec(`UPDATE chats SET unread = 0 WHERE jid = ?`, jid)
+	default:
+		s.db.Exec(`DELETE FROM chats WHERE jid = ?`, jid)
+	}
+	return ids
+}
+
+// RemoveMessage drops one message entirely ("delete for me").
+func (s *MsgStore) RemoveMessage(chat, id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.db.Exec(`DELETE FROM messages WHERE chat = ? AND id = ?`, chat, id)
+	s.db.Exec(`UPDATE chats SET
+		last_ts = COALESCE((SELECT MAX(ts) FROM messages WHERE chat = ?1), last_ts),
+		unread = (SELECT COUNT(*) FROM messages WHERE chat = ?1 AND read = 0 AND from_me = 0)
+		WHERE jid = ?1`, chat)
+}
+
+// MediaInUse reports whether a stored message still references a file.
+func (s *MsgStore) MediaInUse(path string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var n int
+	s.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE media = ?`, path).Scan(&n)
+	return n > 0
 }
 
 // AddMessage stores a message. Returns true if it was new.
 func (s *MsgStore) AddMessage(m Msg, countUnread bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if m.TS <= s.deletedUpto(m.Chat) {
+		return false // removed on some device; don't let history bring it back
+	}
 	read := 1
 	if countUnread && !m.FromMe {
 		read = 0

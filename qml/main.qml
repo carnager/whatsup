@@ -98,6 +98,8 @@ ApplicationWindow {
         else if (infoOpen) call("info")
     }
     onInfoOpenChanged: if (infoOpen) call("info")
+    property string numberResolved: ""
+    onNumberResolvedChanged: if (numberResolved !== "") { search.text = ""; composer.forceActiveFocus() }
     onChatFilterChanged: call("search")
     onStatusTextChanged: if (statusText !== "") statusTimer.restart()
     Timer { id: statusTimer; interval: 8000; onTriggered: root.statusText = "" }
@@ -2611,6 +2613,50 @@ ApplicationWindow {
         MenuEntry {
             text: chatMenu.archived ? "Unarchive chat" : "Archive chat"; iconName: "archive"
             onTriggered: root.call("archive", chatMenu.jid, chatMenu.archived ? "0" : "1")
+        }
+        MenuEntry {
+            text: "Delete chat"; iconName: "trash"; destructive: true
+            onTriggered: { deleteChatDialog.jid = chatMenu.jid; deleteChatDialog.open() }
+        }
+    }
+
+    Dialog {
+        id: deleteChatDialog
+        property string jid: ""
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(420, root.width - 32)
+        modal: true
+        padding: 22
+        background: Rectangle { radius: 14; color: t.raised; border.width: 1; border.color: t.line }
+        header: Text { text: "Delete chat?"; color: t.text; font.pixelSize: 17; font.weight: Font.DemiBold; padding: 22; bottomPadding: 0 }
+        contentItem: Text {
+            wrapMode: Text.WordWrap
+            text: deleteChatDialog.jid.endsWith("@g.us")
+                  ? "Its messages will be removed from this app and your phone. You stay in the group, so new messages bring it back."
+                  : "Its messages will be removed from this app and your phone. The other person keeps their copy."
+            color: t.text2
+            font.pixelSize: 14
+        }
+        footer: Row {
+            layoutDirection: Qt.RightToLeft
+            spacing: 8
+            padding: 16
+            AbstractButton {
+                id: delChatOk
+                implicitWidth: 100; implicitHeight: 36
+                hoverEnabled: true
+                background: Rectangle { radius: 18; color: delChatOk.hovered ? Qt.lighter(t.danger, 1.1) : t.danger }
+                contentItem: Text { text: "Delete"; color: "white"; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                onClicked: { root.call("deleteChat", deleteChatDialog.jid); deleteChatDialog.close() }
+            }
+            AbstractButton {
+                id: delChatCancel
+                implicitWidth: 100; implicitHeight: 36
+                hoverEnabled: true
+                background: Rectangle { radius: 18; color: delChatCancel.hovered ? t.hover : t.field }
+                contentItem: Text { text: "Cancel"; color: t.text; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                onClicked: deleteChatDialog.close()
+            }
         }
     }
 
