@@ -75,6 +75,8 @@ func (n *Notifier) Notify(chat, title, body, icon string) {
 		map[string]dbus.Variant{
 			"desktop-entry": dbus.MakeVariant("whatsup"),
 			"category":      dbus.MakeVariant("im.received"),
+			// we play our own sound; don't let the daemon add a second one
+			"suppress-sound": dbus.MakeVariant(true),
 		}, int32(-1)).Store(&id)
 	if err == nil {
 		n.mu.Lock()

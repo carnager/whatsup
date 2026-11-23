@@ -99,6 +99,10 @@ CREATE TABLE IF NOT EXISTS chat_tombstones (
 	jid  TEXT PRIMARY KEY,
 	upto INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS settings (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
 `)
 	if err != nil {
 		return nil, err
@@ -128,6 +132,20 @@ func (s *MsgStore) exec(q string, args ...any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.db.Exec(q, args...)
+}
+
+// Setting returns a local app setting, "" if unset.
+func (s *MsgStore) Setting(key string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var v string
+	s.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&v)
+	return v
+}
+
+func (s *MsgStore) SetSetting(key, value string) {
+	s.exec(`INSERT INTO settings(key, value) VALUES(?,?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
 }
 
 // UpsertChat creates/updates a chat. unread < 0 keeps the current count.

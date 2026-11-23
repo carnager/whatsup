@@ -27,6 +27,9 @@ ApplicationWindow {
     property bool currentPinned: false
     property bool currentArchived: false
     property bool currentMuted: false
+    property bool muteAll: false
+    property string messageSound: ""
+    property int soundRequest: 0
     property string statusText: ""
     property string qrSource: ""
     property bool loggedIn: false
@@ -126,6 +129,8 @@ ApplicationWindow {
     onChatFilterChanged: call("search")
     onStatusTextChanged: if (statusText !== "") statusTimer.restart()
     Timer { id: statusTimer; interval: 8000; onTriggered: root.statusText = "" }
+    onSoundRequestChanged: messageChime.play()
+    SoundEffect { id: messageChime; source: root.messageSound; volume: 0.8 }
 
     // ---- call into Go ----
     function call(cmd, a, b, c) {
@@ -194,6 +199,7 @@ ApplicationWindow {
         x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
         pin: '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>',
         mute: '<path d="M8.7 3A6 6 0 0 1 18 8a21.3 21.3 0 0 0 .6 5"/><path d="M17 17H3s3-2 3-9a4.67 4.67 0 0 1 .3-1.7"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><path d="m2 2 20 20"/>',
+        bell: '<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>',
         archive: '<rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
         back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
         check: '<path d="M20 6 9 17l-5-5"/>',
@@ -534,6 +540,12 @@ ApplicationWindow {
                         font.pixelSize: 22
                         font.weight: Font.Bold
                         font.letterSpacing: -0.3
+                    }
+                    IconButton {
+                        iconName: root.muteAll ? "mute" : "bell"
+                        tint: root.muteAll ? t.accent : t.text2
+                        tip: root.muteAll ? "All chats muted — click to unmute" : "Mute all chats"
+                        onClicked: root.call("muteAll", root.muteAll ? "0" : "1")
                     }
                     IconButton {
                         iconName: "compose"

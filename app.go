@@ -69,6 +69,9 @@ type App struct {
 	contactsAt   time.Time
 	infoChat     string
 	infoLimits   map[string]int
+	muteAll      bool
+	soundN       int
+	soundAt      time.Time
 
 	dirtyMu  sync.Mutex
 	dirty    bool
@@ -153,6 +156,9 @@ func NewApp(qapp *qt.QApplication, ms *MsgStore, av *Avatars, em *EmojiDB, cache
 	groups := append([]string{"Recent"}, em.Groups...)
 	a.root.SetProperty("emojiGroups", qt.NewQVariant15(groups))
 	a.setEmojis(em.Recent())
+	a.muteAll = ms.Setting("muteAll") == "1"
+	a.set("muteAll", a.muteAll)
+	a.root.SetProperty("messageSound", qt.NewQVariant14(qt.QUrl_FromLocalFile(installChime(cacheDir)).ToString()))
 
 	av.onLoaded = func() { a.markDirty("*avatars") }
 	go a.flusher()
@@ -405,6 +411,10 @@ func (a *App) command(cmd, x, y, z string) {
 			d = time.Duration(h) * time.Hour
 		}
 		a.async("Mute", func() error { return a.wa.SetMuted(x, d) })
+	case "muteAll": // local only: must not overwrite per-chat mutes on the phone
+		a.muteAll = x == "1"
+		a.store.SetSetting("muteAll", x)
+		a.set("muteAll", a.muteAll)
 	case "markRead":
 		a.wa.MarkRead(x)
 		a.markDirty("")
@@ -697,11 +707,17 @@ func (a *App) ChatRemoved(chat string) {
 
 func (a *App) Incoming(m Msg) {
 	mainthread.Start(func() {
-		if a.active && a.current == m.Chat {
+		if a.muteAll || (a.active && a.current == m.Chat) {
 			return
 		}
 		if c, ok := a.store.Chat(m.Chat); ok && c.Muted(time.Now().Unix()) {
 			return
+		}
+		// one chime for a burst of messages
+		if now := time.Now(); now.Sub(a.soundAt) >= 1500*time.Millisecond {
+			a.soundAt = now
+			a.soundN++
+			a.set("soundRequest", a.soundN)
 		}
 		title := a.wa.DisplayName(m.Chat)
 		body := m.Text
