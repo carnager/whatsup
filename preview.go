@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -201,6 +203,30 @@ func (pv *Previews) Get(local, typ string, done func()) string {
 		}
 	}()
 	return ""
+}
+
+// AttachmentFrame grabs a frame of a video picked for sending. It lives in the
+// cache, never next to the user's file, and blocks until it's ready.
+func (pv *Previews) AttachmentFrame(cacheDir, in string) string {
+	st, err := os.Stat(in)
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(cacheDir, "attachments")
+	if os.MkdirAll(dir, 0o700) != nil {
+		return ""
+	}
+	sum := sha256.Sum256(fmt.Appendf(nil, "%s|%d|%d", in, st.Size(), st.ModTime().UnixNano()))
+	out := filepath.Join(dir, hex.EncodeToString(sum[:16])+".jpg")
+	if !fileEmpty(out) {
+		return out
+	}
+	pv.sem <- struct{}{}
+	defer func() { <-pv.sem }()
+	if !makePreview(in, "video", out) {
+		return ""
+	}
+	return out
 }
 
 func makePreview(in, typ, out string) bool {

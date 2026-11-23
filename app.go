@@ -84,7 +84,7 @@ func NewApp(qapp *qt.QApplication, ms *MsgStore, av *Avatars, em *EmojiDB, cache
 		"pinned", "muted", "archived", "rowKind", "typing")
 	a.msgs = NewListModel("msgId", "fromMe", "body", "plain", "time", "status", "kind", "media", "duration",
 		"senderName", "senderColor", "showSender", "avatar", "initials", "dayHeader", "unreadMarker",
-		"quoteId", "quoteName", "quoteText", "quoteColor", "reactions", "edited", "deleted", "first", "forwarded",
+		"quoteId", "quoteName", "quoteText", "quoteColor", "quoteThumb", "quoteVideo", "reactions", "edited", "deleted", "first", "forwarded",
 		"fileInfo", "preview", "snippet", "viewKind", "local",
 		"linkUrl", "linkTitle", "linkDesc", "linkSite", "linkImage", "linkVideo")
 	a.emojis = NewListModel("e", "name")
@@ -224,6 +224,14 @@ func (a *App) command(cmd, x, y, z string) {
 			}
 			return err
 		})
+	case "attachFrame": // x = file url; reports "url\nframe url" ("" if none)
+		go func() {
+			frame := a.previews.AttachmentFrame(a.cacheDir, localPath(x))
+			if frame != "" {
+				frame = "file://" + frame
+			}
+			mainthread.Start(func() { a.set("attachFrame", x+"\n"+frame) })
+		}()
 	case "edit":
 		if t := strings.TrimSpace(y); t != "" {
 			a.async("Edit", func() error { return a.wa.Edit(chat, x, t) })
@@ -1103,8 +1111,16 @@ func (a *App) refreshMessages() {
 				text = "📷 Photo"
 			}
 		}
-		quoteName, quoteColor := "", ""
+		quoteName, quoteColor, quoteThumb, quoteVideo := "", "", "", false
 		if m.QuoteID != "" {
+			chat := a.current
+			var thumb string
+			thumb, quoteVideo = a.wa.QuoteThumb(chat, m, func(local string) string {
+				return a.previews.Get(local, "video", func() { a.markDirty(chat) })
+			})
+			if thumb != "" {
+				quoteThumb = "file://" + thumb
+			}
 			if m.QuoteSender == own {
 				quoteName = "You"
 			} else {
@@ -1122,7 +1138,7 @@ func (a *App) refreshMessages() {
 		keys = append(keys, m.ID)
 		rows = append(rows, []any{m.ID, m.FromMe, a.formatBody(text), text, t.Format("15:04"), m.Status, kind, media, duration,
 			senderName, nameColor(m.Sender), showSender, avatar, initials(senderName), day, unreadMarker,
-			m.QuoteID, quoteName, m.QuoteText, quoteColor, reactionSummary(m.Reactions), m.Edited, m.Deleted, first, m.Forwarded,
+			m.QuoteID, quoteName, m.QuoteText, quoteColor, quoteThumb, quoteVideo, reactionSummary(m.Reactions), m.Edited, m.Deleted, first, m.Forwarded,
 			fileInfo, preview, snippet, viewKind, local,
 			lp.URL, lp.Title, lp.Desc, lp.Site, linkImage, lp.Video})
 	}

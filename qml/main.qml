@@ -97,8 +97,19 @@ ApplicationWindow {
     property string replyId: ""
     property string replyName: ""
     property string replyText: ""
+    property string replyThumb: ""
+    property bool replyVideo: false
     property string editId: ""
     property var attachments: []
+    property var attachFrames: ({})                  // video url -> still ("" if none)
+    property string attachFrame: ""                  // "url\nstill" from Go
+    onAttachFrameChanged: {
+        var i = attachFrame.indexOf("\n")
+        if (i < 0) return
+        var m = Object.assign({}, attachFrames)
+        m[attachFrame.substring(0, i)] = attachFrame.substring(i + 1)
+        attachFrames = m
+    }
     property string flashId: ""
 
     onRaiseRequestChanged: { root.show(); root.raise(); root.requestActivate(); composer.forceActiveFocus() }
@@ -225,7 +236,6 @@ ApplicationWindow {
         if (["zip","tar","gz","xz","7z","rar","zst","bz2"].indexOf(e) >= 0) return "archivefile"
         return "filetext"
     }
-    function isImageName(name) { return fileIcon(name) === "image" }
     function iconUrl(name, color) {
         var c = color.toString()
         var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="' + c +
@@ -420,15 +430,19 @@ ApplicationWindow {
     function cancelCompose() {
         if (editId !== "") composer.text = ""
         linkUrl = ""; linkDismissed = ""; composerLink = ""
-        replyId = ""; replyName = ""; replyText = ""; editId = ""
+        replyId = ""; replyName = ""; replyText = ""; replyThumb = ""; replyVideo = false; editId = ""
     }
-    function startReply(id, name, text) {
+    function replyTo(m) {
         editId = ""
-        replyId = id; replyName = name; replyText = text
+        replyId = m.msgId; replyName = m.who
+        replyText = m.plain !== "" ? m.plain
+                  : m.kind === "image" ? "📷 Photo" : m.kind === "video" ? "🎬 Video" : m.kind
+        replyThumb = m.visualMedia ? m.media : ""
+        replyVideo = m.kind === "video"
         composer.forceActiveFocus()
     }
     function startEdit(id, text) {
-        replyId = ""
+        replyId = ""; replyThumb = ""; replyVideo = false
         editId = id
         composer.text = text
         composer.cursorPosition = text.length
@@ -456,7 +470,11 @@ ApplicationWindow {
     }
     function addAttachments(urls) {
         var list = attachments.slice()
-        for (var i = 0; i < urls.length; i++) list.push(urls[i].toString())
+        for (var i = 0; i < urls.length; i++) {
+            var u = urls[i].toString()
+            list.push(u)
+            if (fileIcon(u) === "video" && attachFrames[u] === undefined) call("attachFrame", u)
+        }
         attachments = list
         composer.forceActiveFocus()
     }
@@ -968,6 +986,8 @@ ApplicationWindow {
                             required property string quoteName
                             required property string quoteText
                             required property string quoteColor
+                            required property string quoteThumb
+                            required property bool quoteVideo
                             required property string reactions
                             required property bool edited
                             required property bool deleted
@@ -1081,7 +1101,7 @@ ApplicationWindow {
                                     }
                                     TapHandler {
                                         acceptedButtons: Qt.LeftButton
-                                        onDoubleTapped: if (!msg.deleted) root.startReply(msg.msgId, msg.who, msg.plain !== "" ? msg.plain : msg.kind)
+                                        onDoubleTapped: if (!msg.deleted) root.replyTo(msg)
                                     }
 
                                     Column {
@@ -1090,7 +1110,7 @@ ApplicationWindow {
                                         y: bubble.pad - (msg.sticker ? 0 : 2)
                                         spacing: 5
                                         width: Math.max(sender.visible ? Math.min(sender.implicitWidth, msgList.maxBubble) : 0,
-                                                        quote.visible ? Math.min(Math.max(quoteNameText.implicitWidth, quoteBody.implicitWidth) + 22, msgList.maxBubble) : 0,
+                                                        quote.visible ? Math.min(Math.max(quoteNameText.implicitWidth, quoteBody.implicitWidth) + 22 + (quoteThumbBox.visible ? 54 : 0), msgList.maxBubble) : 0,
                                                         mediaBox.visible ? mediaBox.width : 0,
                                                         docCard.visible ? docCard.width : 0,
                                                         linkCard.visible ? linkCard.width : 0,
@@ -1124,18 +1144,38 @@ ApplicationWindow {
                                             id: quote
                                             visible: msg.quoteId !== "" && !msg.deleted
                                             width: parent.width
-                                            height: quoteCol.height + 12
+                                            height: Math.max(quoteCol.height + 12, quoteThumbBox.visible ? 56 : 0)
                                             radius: 8
                                             color: msg.fromMe ? Qt.rgba(0, 0, 0, t.dark ? 0.22 : 0.06) : t.field
                                             clip: true
                                             Rectangle { width: 4; height: parent.height; color: msg.quoteColor }
                                             Column {
                                                 id: quoteCol
-                                                x: 12; y: 6
-                                                width: parent.width - 18
+                                                x: 12
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                width: parent.width - 18 - (quoteThumbBox.visible ? 54 : 0)
                                                 spacing: 1
                                                 Text { id: quoteNameText; text: msg.quoteName; color: msg.quoteColor; font.pixelSize: 12; font.weight: Font.DemiBold; elide: Text.ElideRight; width: parent.width }
                                                 Text { id: quoteBody; text: msg.quoteText; color: t.text2; font.pixelSize: 13; maximumLineCount: 2; elide: Text.ElideRight; wrapMode: Text.Wrap; width: parent.width; textFormat: Text.PlainText }
+                                            }
+                                            Image {
+                                                id: quoteThumbBox
+                                                visible: msg.quoteThumb !== "" && status !== Image.Error
+                                                anchors.right: parent.right
+                                                anchors.top: parent.top
+                                                anchors.bottom: parent.bottom
+                                                width: 56
+                                                source: msg.quoteThumb
+                                                sourceSize.width: 112; sourceSize.height: 112
+                                                fillMode: Image.PreserveAspectCrop
+                                                asynchronous: true
+                                                Rectangle {
+                                                    visible: msg.quoteVideo
+                                                    anchors.centerIn: parent
+                                                    width: 24; height: 24; radius: 12
+                                                    color: Qt.rgba(0, 0, 0, 0.6)
+                                                    Icon { anchors.centerIn: parent; anchors.horizontalCenterOffset: 1; name: "play"; size: 13; tint: "white" }
+                                                }
                                             }
                                             TapHandler { onTapped: root.jumpTo(msg.quoteId) }
                                             HoverHandler { cursorShape: Qt.PointingHandCursor }
@@ -1637,7 +1677,8 @@ ApplicationWindow {
                             Column {
                                 anchors.left: bannerIcon.right
                                 anchors.leftMargin: 12
-                                anchors.right: bannerClose.left
+                                anchors.right: bannerThumb.left
+                                anchors.rightMargin: 8
                                 anchors.verticalCenter: parent.verticalCenter
                                 spacing: 2
                                 Text {
@@ -1649,6 +1690,26 @@ ApplicationWindow {
                                     text: root.editId !== "" ? "Enter to save · Esc to cancel" : root.replyText
                                     color: t.text2; font.pixelSize: 13; elide: Text.ElideRight; maximumLineCount: 1
                                     textFormat: Text.PlainText
+                                }
+                            }
+                            Image {
+                                id: bannerThumb
+                                readonly property bool shown: root.editId === "" && root.replyThumb !== "" && status !== Image.Error
+                                visible: shown
+                                anchors.right: bannerClose.left
+                                anchors.rightMargin: shown ? 6 : 0
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: shown ? 40 : 0; height: 40
+                                source: root.replyThumb
+                                sourceSize.width: 80; sourceSize.height: 80
+                                fillMode: Image.PreserveAspectCrop
+                                asynchronous: true
+                                Rectangle {
+                                    visible: root.replyVideo
+                                    anchors.centerIn: parent
+                                    width: 20; height: 20; radius: 10
+                                    color: Qt.rgba(0, 0, 0, 0.6)
+                                    Icon { anchors.centerIn: parent; anchors.horizontalCenterOffset: 1; name: "play"; size: 11; tint: "white" }
                                 }
                             }
                             IconButton {
@@ -1727,16 +1788,77 @@ ApplicationWindow {
                             Repeater {
                                 model: root.attachments
                                 delegate: Rectangle {
+                                    id: att
                                     required property string modelData
                                     required property int index
-                                    height: 44
-                                    width: chipRow.implicitWidth + 18
-                                    radius: 12
+                                    readonly property string type: root.fileIcon(modelData)
+                                    readonly property string frame: root.attachFrames[modelData] === undefined ? "" : root.attachFrames[modelData]
+                                    // pictures and videos get a real preview; anything
+                                    // that can't be shown stays a file chip
+                                    readonly property bool tile: type === "image" ? attThumb.status !== Image.Error
+                                                               : type === "video" && root.attachFrames[modelData] !== ""
+                                    readonly property real aspect: attThumb.status === Image.Ready && attThumb.implicitHeight > 0
+                                                                   ? attThumb.implicitWidth / attThumb.implicitHeight : 1
+                                    height: tile ? 132 : 44
+                                    width: tile ? Math.max(96, Math.min(126 * aspect + 6, 240)) : chipRow.implicitWidth + 18
+                                    radius: tile ? 10 : 12
                                     color: t.field
                                     border.width: 1
                                     border.color: t.line
+                                    clip: true
+
+                                    Icon {
+                                        anchors.centerIn: parent
+                                        visible: att.tile && attThumb.status !== Image.Ready
+                                        name: att.type; size: 28; tint: t.text3
+                                    }
+                                    Image {
+                                        id: attThumb
+                                        visible: att.tile
+                                        anchors.fill: parent
+                                        anchors.margins: 3
+                                        source: att.type === "image" ? att.modelData : att.frame
+                                        sourceSize.height: 264
+                                        fillMode: Image.PreserveAspectCrop
+                                        asynchronous: true
+                                    }
+                                    Rectangle {
+                                        visible: att.tile && att.type === "video"
+                                        anchors.centerIn: parent
+                                        width: 40; height: 40; radius: 20
+                                        color: Qt.rgba(0, 0, 0, 0.6)
+                                        Icon { anchors.centerIn: parent; anchors.horizontalCenterOffset: 2; name: "play"; size: 18; tint: "white" }
+                                    }
+                                    Rectangle {
+                                        visible: att.tile
+                                        anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+                                        anchors.margins: 3
+                                        height: 22
+                                        color: Qt.rgba(0, 0, 0, 0.6)
+                                        Text {
+                                            anchors.fill: parent; anchors.leftMargin: 6; anchors.rightMargin: 6
+                                            verticalAlignment: Text.AlignVCenter
+                                            text: root.fileName(att.modelData)
+                                            color: "white"; font.pixelSize: 11
+                                            elide: Text.ElideMiddle; textFormat: Text.PlainText
+                                        }
+                                    }
+                                    Rectangle {
+                                        visible: att.tile
+                                        anchors.right: parent.right; anchors.top: parent.top
+                                        anchors.margins: 6
+                                        width: 24; height: 24; radius: 12
+                                        color: tileCloseHover.hovered ? Qt.rgba(0, 0, 0, 0.85) : Qt.rgba(0, 0, 0, 0.6)
+                                        Icon { anchors.centerIn: parent; name: "x"; size: 14; tint: "white" }
+                                        HoverHandler { id: tileCloseHover; cursorShape: Qt.PointingHandCursor }
+                                        TapHandler {
+                                            onTapped: { var l = root.attachments.slice(); l.splice(att.index, 1); root.attachments = l }
+                                        }
+                                    }
+
                                     Row {
                                         id: chipRow
+                                        visible: !att.tile
                                         anchors.verticalCenter: parent.verticalCenter
                                         x: 6
                                         spacing: 8
@@ -1744,23 +1866,14 @@ ApplicationWindow {
                                             width: 32; height: 32; radius: 7
                                             anchors.verticalCenter: parent.verticalCenter
                                             color: t.accentSoft
-                                            clip: true
-                                            Icon { anchors.centerIn: parent; visible: chipThumb.status !== Image.Ready; name: root.fileIcon(modelData); size: 16; tint: t.accent }
-                                            Image {
-                                                id: chipThumb
-                                                anchors.fill: parent
-                                                source: root.isImageName(modelData) ? modelData : ""
-                                                sourceSize.width: 64; sourceSize.height: 64
-                                                fillMode: Image.PreserveAspectCrop
-                                                asynchronous: true
-                                            }
+                                            Icon { anchors.centerIn: parent; name: att.type; size: 16; tint: t.accent }
                                         }
-                                        Text { text: root.fileName(modelData); color: t.text; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter; elide: Text.ElideMiddle; width: Math.min(implicitWidth, 260) }
+                                        Text { text: root.fileName(att.modelData); color: t.text; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter; elide: Text.ElideMiddle; width: Math.min(implicitWidth, 260) }
                                         Icon {
                                             name: "x"; size: 14; tint: t.text3
                                             anchors.verticalCenter: parent.verticalCenter
                                             TapHandler {
-                                                onTapped: { var l = root.attachments.slice(); l.splice(index, 1); root.attachments = l }
+                                                onTapped: { var l = root.attachments.slice(); l.splice(att.index, 1); root.attachments = l }
                                             }
                                         }
                                     }
@@ -2802,7 +2915,7 @@ ApplicationWindow {
         MenuEntry {
             text: "Reply"; iconName: "reply"
             enabled: msgMenu.m !== null && !msgMenu.m.deleted
-            onTriggered: root.startReply(msgMenu.m.msgId, msgMenu.m.who, msgMenu.m.plain !== "" ? msgMenu.m.plain : msgMenu.m.kind)
+            onTriggered: root.replyTo(msgMenu.m)
         }
         MenuEntry {
             text: "Forward"; iconName: "forward"

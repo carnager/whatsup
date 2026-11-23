@@ -893,6 +893,58 @@ func (w *WA) quoteContext(chat, quoteID string) *waE2E.ContextInfo {
 	}
 }
 
+// QuoteThumb finds a small picture for the image or video a message quotes:
+// the original's cached media if there is any, else the thumbnail carried in
+// the reply itself. frame turns a downloaded video into a still.
+func (w *WA) QuoteThumb(chat string, m Msg, frame func(local string) string) (path string, video bool) {
+	if q, ok := w.store.Message(chat, m.QuoteID); ok {
+		if q.Deleted {
+			return "", false
+		}
+		switch {
+		case q.Kind == "video":
+			video = true
+			if strings.HasSuffix(q.Media, "_thumb.jpg") {
+				return q.Media, true
+			}
+			if mi, ok := w.MediaInfo(chat, q.ID); ok && mi.Local != "" {
+				if p := frame(mi.Local); p != "" {
+					return p, true
+				}
+			}
+		case q.Kind == "image" || q.Kind == "sticker" || (q.Kind == "" && q.Media != ""):
+			if q.Media != "" {
+				return q.Media, false
+			}
+		default:
+			return "", false
+		}
+	}
+	var raw waE2E.Message
+	if m.Raw == nil || proto.Unmarshal(m.Raw, &raw) != nil {
+		return "", video
+	}
+	ci := contextInfo(&raw)
+	if ci == nil {
+		return "", video
+	}
+	var thumb []byte
+	switch qm := ci.GetQuotedMessage(); {
+	case qm.GetImageMessage() != nil:
+		thumb = qm.GetImageMessage().GetJPEGThumbnail()
+	case qm.GetVideoMessage() != nil:
+		thumb, video = qm.GetVideoMessage().GetJPEGThumbnail(), true
+	}
+	if len(thumb) == 0 {
+		return "", video
+	}
+	p := filepath.Join(w.mediaDir, safeName(m.QuoteID)+"_thumb.jpg")
+	if fileEmpty(p) && os.WriteFile(p, thumb, 0o600) != nil {
+		return "", video
+	}
+	return p, video
+}
+
 func (w *WA) send(chat string, msg *waE2E.Message, local Msg) error {
 	to, err := types.ParseJID(chat)
 	if err != nil {
@@ -996,12 +1048,19 @@ func (w *WA) SendFile(chat, path, caption, quoteID string) error {
 		if err != nil {
 			return err
 		}
-		msg = &waE2E.Message{VideoMessage: &waE2E.VideoMessage{
+		vm := &waE2E.VideoMessage{
 			Caption: proto.String(caption), Mimetype: proto.String(base),
 			URL: &up.URL, DirectPath: &up.DirectPath, MediaKey: up.MediaKey,
 			FileEncSHA256: up.FileEncSHA256, FileSHA256: up.FileSHA256, FileLength: &up.FileLength,
 			ContextInfo: ci,
-		}}
+		}
+		// a missing frame (no ffmpeg, odd file) must not stop the video going out
+		if frame, thumb, wd, ht := videoThumb(w.mediaDir, path); frame != "" {
+			vm.JPEGThumbnail = thumb
+			vm.Width, vm.Height = proto.Uint32(uint32(wd)), proto.Uint32(uint32(ht))
+			local.Media = frame
+		}
+		msg = &waE2E.Message{VideoMessage: vm}
 		local.Kind = "video"
 		if caption == "" {
 			local.Text = "🎬 " + filepath.Base(path)
@@ -1253,6 +1312,27 @@ func copyToCache(dir string, data []byte, ext string) string {
 		return ""
 	}
 	return p
+}
+
+// videoThumb grabs a still of a video being sent: the frame file kept for our
+// own display, the small JPEG that travels with the message, and its size.
+func videoThumb(dir, path string) (string, []byte, int, int) {
+	out := filepath.Join(dir, fmt.Sprintf("sent_%d_thumb.jpg", time.Now().UnixNano()))
+	if !makePreview(path, "video", out) {
+		return "", nil, 0, 0
+	}
+	os.Chmod(out, 0o600)
+	data, err := os.ReadFile(out)
+	if err != nil {
+		os.Remove(out)
+		return "", nil, 0, 0
+	}
+	thumb, wd, ht := makeThumb(data)
+	if len(thumb) == 0 {
+		os.Remove(out)
+		return "", nil, 0, 0
+	}
+	return out, thumb, wd, ht
 }
 
 func makeThumb(data []byte) ([]byte, int, int) {
