@@ -158,7 +158,6 @@ func NewApp(qapp *qt.QApplication, ms *MsgStore, av *Avatars, em *EmojiDB, cache
 	a.setEmojis(em.Recent())
 	a.muteAll = ms.Setting("muteAll") == "1"
 	a.set("muteAll", a.muteAll)
-	a.root.SetProperty("messageSound", qt.NewQVariant14(qt.QUrl_FromLocalFile(installChime(cacheDir)).ToString()))
 
 	av.onLoaded = func() { a.markDirty("*avatars") }
 	go a.flusher()

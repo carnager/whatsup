@@ -130,7 +130,7 @@ ApplicationWindow {
     onStatusTextChanged: if (statusText !== "") statusTimer.restart()
     Timer { id: statusTimer; interval: 8000; onTriggered: root.statusText = "" }
     onSoundRequestChanged: messageChime.play()
-    SoundEffect { id: messageChime; source: root.messageSound; volume: 0.8 }
+    SoundEffect { id: messageChime; source: root.messageSound }
 
     // ---- call into Go ----
     function call(cmd, a, b, c) {

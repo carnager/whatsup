@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -28,7 +29,7 @@ func chimeWAV() []byte {
 			v += env * (math.Sin(2*math.Pi*n.freq*d) + 0.18*math.Sin(4*math.Pi*n.freq*d))
 		}
 		fade := math.Min((length-t)/0.03, 1) // ends exactly at silence
-		samples[i] = int16(v * fade * 0.3 * math.MaxInt16)
+		samples[i] = int16(v * fade * 0.24 * math.MaxInt16)
 	}
 
 	var b bytes.Buffer
@@ -49,7 +50,22 @@ func chimeWAV() []byte {
 	return b.Bytes()
 }
 
-// installChime writes the sound to the cache dir for QML's SoundEffect.
+// messageSoundPath returns the user's own message.wav from the data dir if it
+// is a WAV file (all QML's SoundEffect can play), else the built-in chime.
+func messageSoundPath(dataDir, cacheDir string) string {
+	custom := filepath.Join(dataDir, "message.wav")
+	if f, err := os.Open(custom); err == nil {
+		defer f.Close()
+		head := make([]byte, 12)
+		if _, err := io.ReadFull(f, head); err == nil &&
+			string(head[:4]) == "RIFF" && string(head[8:12]) == "WAVE" {
+			return custom
+		}
+	}
+	return installChime(cacheDir)
+}
+
+// installChime writes the built-in sound to the cache dir.
 func installChime(cacheDir string) string {
 	p := filepath.Join(cacheDir, "message.wav")
 	wav := chimeWAV()

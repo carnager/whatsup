@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -26,6 +27,23 @@ func TestChimeIsValidWAV(t *testing.T) {
 	}
 	if peak < 3000 || peak > 30000 {
 		t.Fatalf("peak %d is silent or clipping", peak)
+	}
+}
+
+func TestMessageSoundPath(t *testing.T) {
+	data, cache := t.TempDir(), t.TempDir()
+	builtin := filepath.Join(cache, "message.wav")
+	custom := filepath.Join(data, "message.wav")
+	if got := messageSoundPath(data, cache); got != builtin {
+		t.Fatalf("no custom file: got %s", got)
+	}
+	os.WriteFile(custom, []byte("ID3 this is not a wav file"), 0o644)
+	if got := messageSoundPath(data, cache); got != builtin {
+		t.Fatalf("invalid custom file: got %s", got)
+	}
+	os.WriteFile(custom, chimeWAV(), 0o644)
+	if got := messageSoundPath(data, cache); got != custom {
+		t.Fatalf("valid custom file: got %s", got)
 	}
 }
 

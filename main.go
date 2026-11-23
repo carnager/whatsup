@@ -44,6 +44,7 @@ func main() {
 	}
 	av := NewAvatars(cacheDir)
 	app := NewApp(qapp, ms, av, NewEmojiDB(dataDir), cacheDir)
+	app.set("messageSound", qt.QUrl_FromLocalFile(messageSoundPath(dataDir, cacheDir)).ToString())
 	wa, err := NewWA(dataDir, cacheDir, ms, app)
 	if err != nil {
 		fatal(err)
