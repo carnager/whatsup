@@ -22,26 +22,56 @@ func callingCode(number string) string {
 	return number[:3]
 }
 
-// normalizeNumber turns what the user typed into international digits.
-// "+49 171 234", "0049171234" and, for an own number in Germany, "0171234"
-// all become "49171234". Other input is taken as already international.
-func normalizeNumber(input, ownNumber string) string {
-	input = strings.TrimSpace(input)
-	digits := strings.Map(func(r rune) rune {
-		if r >= '0' && r <= '9' {
-			return r
-		}
-		return -1
-	}, input)
-	switch {
-	case strings.HasPrefix(input, "+"):
-		return digits
-	case strings.HasPrefix(digits, "00"):
-		return digits[2:]
-	case strings.HasPrefix(digits, "0"):
-		if cc := callingCode(ownNumber); cc != "" {
-			return cc + digits[1:]
+// phoneSeparators are what people type or paste between digits.
+var phoneSeparators = strings.NewReplacer(
+	" ", "", "\u00a0", "", "\u202f", "", "\t", "",
+	"-", "", "\u2010", "", "\u2011", "", "\u2012", "", "\u2013", "", "\u2014", "",
+	"/", "", "\\", "", ".", "", "(", "", ")", "", "[", "", "]", "", "'", "",
+)
+
+// phoneDigits strips separators; ok is false unless what's left is a phone
+// number: an optional "+" and 6 to 15 digits.
+func phoneDigits(input string) (s string, ok bool) {
+	s = strings.TrimSpace(input)
+	s = strings.TrimPrefix(strings.TrimPrefix(s, "tel:"), "TEL:")
+	// "+49 (0)171 …": the bracketed trunk 0 isn't dialled internationally
+	if strings.HasPrefix(s, "+") || strings.HasPrefix(s, "00") {
+		s = strings.Replace(s, "(0)", "", 1)
+	}
+	s = phoneSeparators.Replace(s)
+	digits := strings.TrimPrefix(s, "+")
+	if len(digits) < 6 || len(digits) > 17 { // 17: "00" + 15 digits
+		return "", false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return "", false
 		}
 	}
-	return digits
+	return s, true
+}
+
+// normalizeNumber turns what the user typed into international digits, or ""
+// if it isn't a phone number. "+49 171 234", "0049 171 234", "0171/234" and
+// "171-234" all become "49171234" for an own number in Germany: without a
+// prefix a number is national unless it starts with the own country code.
+func normalizeNumber(input, ownNumber string) string {
+	s, ok := phoneDigits(input)
+	if !ok {
+		return ""
+	}
+	cc := callingCode(ownNumber)
+	switch {
+	case strings.HasPrefix(s, "+"):
+		return s[1:]
+	case strings.HasPrefix(s, "00"):
+		return s[2:]
+	case strings.HasPrefix(s, "0"):
+		if cc != "" {
+			return cc + s[1:]
+		}
+	case cc != "" && !strings.HasPrefix(s, cc):
+		return cc + s
+	}
+	return s
 }

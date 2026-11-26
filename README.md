@@ -17,6 +17,11 @@ It links to your phone like WhatsApp Web does: scan the QR code under
 - Link previews, YouTube included. Incoming links only show the preview the sender attached,
   so nobody learns your IP address by sending a link; your own links are fetched
 - Contact and group info with shared media, avatars, notifications and a tray icon
+- Message sound, per-chat mutes synced with the phone, and a local "mute all" switch. Put a
+  WAV file at `~/.local/share/whatsup/message.wav` to use your own sound
+- Start a chat by typing a phone number into the search, in any common notation; numbers
+  without a country code are taken as national to your own
+- `/np` sends what [Melody](https://github.com/carnager/melody-music) is playing
 - Native file dialogs through xdg-desktop-portal
 
 ## Install

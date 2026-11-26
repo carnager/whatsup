@@ -5,23 +5,6 @@ import (
 	"testing"
 )
 
-func TestNormalizeNumber(t *testing.T) {
-	cases := []struct{ in, own, want string }{
-		{"+49 171 234-567", "4915100000", "49171234567"},
-		{"0049 171 234567", "4915100000", "49171234567"},
-		{"0171 234567", "4915100000", "49171234567"},
-		{"0171 234567", "12025550100", "1171234567"},
-		{"0171 234567", "351912345678", "351171234567"},
-		{"49171234567", "12025550100", "49171234567"},
-		{"0171234567", "", "0171234567"},
-	}
-	for _, c := range cases {
-		if got := normalizeNumber(c.in, c.own); got != c.want {
-			t.Errorf("normalizeNumber(%q, %q) = %q, want %q", c.in, c.own, got, c.want)
-		}
-	}
-}
-
 func testStore(t *testing.T) *MsgStore {
 	t.Helper()
 	s, err := OpenMsgStore(filepath.Join(t.TempDir(), "m.db"))

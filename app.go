@@ -216,7 +216,15 @@ func (a *App) command(cmd, x, y, z string) {
 		a.openChat(x)
 	case "send":
 		text := strings.TrimSpace(x)
-		if text != "" && chat != "" {
+		if isNowPlaying(text) && chat != "" {
+			a.async("Now playing", func() error {
+				np, err := melodyNowPlaying()
+				if err != nil {
+					return err
+				}
+				return a.wa.SendText(chat, np, y, false)
+			})
+		} else if text != "" && chat != "" {
 			a.async("Send", func() error { return a.wa.SendText(chat, text, y, z != "nopreview") })
 		}
 	case "sendFile": // x = file url, y = caption, z = reply id
@@ -807,8 +815,6 @@ func (a *App) contactList() []Contact {
 	return a.contacts
 }
 
-var digitsRe = regexp.MustCompile(`^\+?[0-9 ()/-]{6,}$`)
-
 func (a *App) refreshChats() {
 	q := strings.ToLower(strings.TrimSpace(a.root.Property("searchText").ToString()))
 	filter := a.root.Property("chatFilter").ToString()
@@ -888,8 +894,7 @@ func (a *App) refreshChats() {
 				n++
 			}
 		}
-		if digitsRe.MatchString(q) {
-			num := normalizeNumber(q, a.wa.ownJID().User)
+		if num := normalizeNumber(q, a.wa.ownJID().User); num != "" {
 			keys = append(keys, "number:"+num)
 			rows = append(rows, []any{num, "Message +" + num, "Start a new chat with this number", "", 0,
 				"", "+", "#7bc862", false, false, false, "number", false})
