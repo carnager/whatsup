@@ -47,3 +47,22 @@ func TestFormatNowPlaying(t *testing.T) {
 		t.Error("isNowPlaying")
 	}
 }
+
+func TestPhoneQuery(t *testing.T) {
+	for _, c := range []struct {
+		in, want string
+		ok       bool
+	}{
+		{"0171-234", "171234", true},
+		{"+49 171", "49171", true},
+		{"(0171) 23", "17123", true},
+		{"12", "", false},
+		{"anna", "", false},
+		{"171 abc", "", false},
+	} {
+		got, ok := phoneQuery(c.in)
+		if got != c.want || ok != c.ok {
+			t.Errorf("phoneQuery(%q) = %q, %v; want %q, %v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}

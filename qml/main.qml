@@ -127,6 +127,7 @@ ApplicationWindow {
     property string numberResolved: ""
     onNumberResolvedChanged: if (numberResolved !== "") { search.text = ""; composer.forceActiveFocus() }
     onChatFilterChanged: call("search")
+    onSearchTextChanged: call("search")
     onStatusTextChanged: if (statusText !== "") statusTimer.restart()
     Timer { id: statusTimer; interval: 8000; onTriggered: root.statusText = "" }
     onSoundRequestChanged: messageChime.play()
@@ -583,7 +584,7 @@ ApplicationWindow {
                         color: t.text
                         font.pixelSize: 14
                         background: null
-                        onTextChanged: root.call("search")
+                        // refreshing happens in root.onSearchTextChanged, once the binding has updated
                         Keys.onEscapePressed: { text = ""; composer.forceActiveFocus() }
                         Keys.onDownPressed: chatList.forceActiveFocus()
                         onAccepted: if (chatList.count > 0) { chatList.activate(0); composer.forceActiveFocus() }

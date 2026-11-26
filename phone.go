@@ -51,6 +51,25 @@ func phoneDigits(input string) (s string, ok bool) {
 	return s, true
 }
 
+// phoneQuery reports whether a search looks like (part of) a phone number,
+// and gives its digits without "+", "00" or the trunk "0", to find chats and
+// contacts whose number contains them.
+func phoneQuery(q string) (digits string, ok bool) {
+	s := strings.TrimSpace(q)
+	s = strings.Replace(s, "(0)", "", 1)
+	s = phoneSeparators.Replace(s)
+	s = strings.TrimPrefix(s, "+")
+	if len(s) < 3 {
+		return "", false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+	return strings.TrimLeft(s, "0"), true
+}
+
 // normalizeNumber turns what the user typed into international digits, or ""
 // if it isn't a phone number. "+49 171 234", "0049 171 234", "0171/234" and
 // "171-234" all become "49171234" for an own number in Germany: without a

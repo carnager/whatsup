@@ -875,9 +875,23 @@ func (a *App) refreshChats() {
 	}
 	switch {
 	case q != "":
+		own := a.wa.ownJID().User
+		num := normalizeNumber(q, own)
+		pq, isPhone := phoneQuery(q)
+		user := func(jid string) string { return strings.SplitN(jid, "@", 2)[0] }
+		matches := func(name, jid string) bool {
+			if isPhone {
+				return pq != "" && strings.Contains(user(jid), pq)
+			}
+			return strings.Contains(strings.ToLower(name), q) || strings.Contains(jid, q)
+		}
+		exact := -1 // the chat or contact the typed number belongs to
 		for _, c := range all {
 			name := nameOf(c)
-			if strings.Contains(strings.ToLower(name), q) || strings.Contains(c.JID, q) {
+			if matches(name, c.JID) {
+				if num != "" && exact < 0 && user(c.JID) == num && !strings.HasSuffix(c.JID, "@g.us") {
+					exact = len(rows)
+				}
 				keys = append(keys, c.JID)
 				rows = append(rows, row(c, name))
 			}
@@ -887,17 +901,27 @@ func (a *App) refreshChats() {
 			if have[ct.JID] || n >= 50 {
 				continue
 			}
-			if strings.Contains(strings.ToLower(ct.Name), q) || strings.Contains(ct.JID, q) {
+			if matches(ct.Name, ct.JID) {
+				if num != "" && exact < 0 && user(ct.JID) == num {
+					exact = len(rows)
+				}
 				keys = append(keys, "contact:"+ct.JID)
-				rows = append(rows, []any{ct.JID, ct.Name, "+" + strings.Split(ct.JID, "@")[0], "", 0,
+				rows = append(rows, []any{ct.JID, ct.Name, "+" + user(ct.JID), "", 0,
 					a.avatars.Get(ct.JID), initials(ct.Name), nameColor(ct.JID), false, false, false, "contact", false})
 				n++
 			}
 		}
-		if num := normalizeNumber(q, a.wa.ownJID().User); num != "" {
-			keys = append(keys, "number:"+num)
-			rows = append(rows, []any{num, "Message +" + num, "Start a new chat with this number", "", 0,
-				"", "+", "#7bc862", false, false, false, "number", false})
+		// first, so Enter in the search field opens it
+		switch {
+		case exact > 0:
+			k, r := keys[exact], rows[exact]
+			copy(keys[1:exact+1], keys[:exact])
+			copy(rows[1:exact+1], rows[:exact])
+			keys[0], rows[0] = k, r
+		case exact < 0 && num != "":
+			keys = append([]string{"number:" + num}, keys...)
+			rows = append([][]any{{num, "Message +" + num, "Start a new chat with this number", "", 0,
+				"", "+", "#7bc862", false, false, false, "number", false}}, rows...)
 		}
 	case a.showArchived:
 		keys = append(keys, "back")
